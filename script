@@ -1,0 +1,164 @@
+SELECT * 
+FROM `alien-cedar-469420-n9.hollywood.movies`;
+
+--create a stage table for cleaning
+create table if not exists `alien-cedar-469420-n9.hollywood.movies_staging`
+like `alien-cedar-469420-n9.hollywood.movies`;
+
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`;
+
+insert `alien-cedar-469420-n9.hollywood.movies_staging`
+select *
+from `alien-cedar-469420-n9.hollywood.movies`;
+
+--now we are ready to use staging table
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`;
+
+--check for bad data, null values, check for duplicates
+select distinct `Lead Studio`
+from `alien-cedar-469420-n9.hollywood.movies_staging`;
+
+#check out movies from Fox and 20th Century Fox, make sure these 2 are separate studios
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where `Lead Studio` like '%Fox%';
+
+#8 records show movies from Fox and 20th Century Fox, rabbit holing on wikipedia showed these movies are all distriuted by the same company, so change the studio name
+update `alien-cedar-469420-n9.hollywood.movies_staging`
+set `Lead Studio` = '20th Century Fox'
+where `Lead Studio` like '%Fox%';
+#result showed 8 records modified, checked using the query above, worked
+select distinct `Lead Studio`
+from `alien-cedar-469420-n9.hollywood.movies_staging`;
+
+#now check out null records for Studio
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where `Lead Studio` is null;
+#there is 1 record, this movie on wikipedia shows it's distributed by Warner Bro, and I saw earlier there are already movies in this data distributed by warner bro, so I will update the table but using the exact spelling as the other records to avoid duplicate
+update `alien-cedar-469420-n9.hollywood.movies_staging`
+set `Lead Studio` = 'Warner Bros.'
+where `Lead Studio` is Null;
+#showed 1 record modified, perfect, now validate
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where Film in ('No Reservations');
+
+select distinct `Lead Studio`
+from `alien-cedar-469420-n9.hollywood.movies_staging`;
+#perfect record, now move on
+
+#the rest of the records are mostly null, so i will approach it differently
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where `Audience  score %` is null or Profitability is null or `Rotten Tomatoes %` is null or `Worldwide Gross` is null or Year is null;
+#shows 4 records with nulls, no null records from worldwide gross and year, validate
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where `Worldwide Gross` is null;
+#all good, back to previous 4 records
+#a little investigation shows that Audience score is basically Popcornmeter on rotten tomato and rotten tomator % is basically the tomatometer
+#so I can replace the nulls for something borrowed based on what I see on rotten tomato
+update `alien-cedar-469420-n9.hollywood.movies_staging`
+set `Audience  score %` = 15, `Rotten Tomatoes %` = 48
+where Film in ('Something Borrowed');
+
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where Film in ('Something Borrowed');
+
+#perfect, record updated, let's check again
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where `Audience  score %` is null or Profitability is null or `Rotten Tomatoes %` is null or `Worldwide Gross` is null or Year is null;
+#now just missing profitability, regarding missing profitability, do something digging on wiki and imdb
+#when in rome had 28m budget, grossed 43m, so that is ~1.5 more
+#our family wedding had 14m budget, grossed 21m
+#jane ere's record is a bit hard to find, gross is easy to find but budget doesn't seem apparent, so will leave it null then
+update `alien-cedar-469420-n9.hollywood.movies_staging`
+set Profitability = (
+  case when Film = 'When in Rome' then 43/28
+  when Film = 'Our Family Wedding' then 21/14
+  else Profitability
+  end
+)
+where Film in ('When in Rome', 'Our Family Wedding');
+
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where Film in ('When in Rome', 'Our Family Wedding', 'Jane Eyre');
+#perfect, looks like it got updated correctly
+#the only record now that shows null is Jane Eyre
+#so now I want to remove this record to have a complete clean table with no null values
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where Film in ('Jane Eyre');
+
+delete from `alien-cedar-469420-n9.hollywood.movies_staging`
+where Film in ('Jane Eyre');
+
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where Film in ('Jane Eyre');
+#confirm removal
+
+#run duplicate for overall just to be sure
+with duplicate as (
+select *, row_number() over(partition by Film, Genre,`Lead Studio`, `Audience  score %`, cast(Profitability as INT), `Rotten Tomatoes %`, cast(`Worldwide Gross` as INT), Year) as RowN
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+)
+
+select *
+from duplicate
+where RowN > 1;
+#no record shown, so no duplicate at this point, we already took care of some missing values inherent in the dataset
+#run some basic EDA to see how things look
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`;
+
+select max(`Audience  score %`), min(`Audience  score %`), max(Profitability), min(Profitability), max(`Rotten Tomatoes %`), min(`Rotten Tomatoes %`), max(`Worldwide Gross`), min(`Worldwide Gross`), max(Year), min(Year)
+from `alien-cedar-469420-n9.hollywood.movies_staging`;
+#there are some really huge numbers, invesigate
+#very high and very low profitability, really low worldwide gross, really low rotten tomates %
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+order by `Worldwide Gross` asc;
+
+#data cleaning is pretty much done, most issues are dealt with
+#more EDA
+#now let's look at the most proftiable movies in each year
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+order by Year asc, Profitability desc;
+
+with ranktable as (
+select *, dense_rank() over(partition by Year order by Profitability desc) as Ranking
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+order by Year
+)
+select *
+from ranktable
+where Ranking = 1;
+
+#let's look at studios with the most profitable movies
+select `Lead Studio`, count(`Lead Studio`) as Tally
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+where Profitability >= 1
+group by 1
+order by Tally desc;
+
+#let's look at movies with high gross and their profitability, we will rank them
+select *
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+order by `Worldwide Gross` desc;
+
+select *, dense_rank() over(order by `Worldwide Gross` desc) as GrossRank, dense_rank() over(order by Profitability desc) as ProfitRank
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+order by ProfitRank asc;
+
+
+select *, dense_rank() over(order by `Worldwide Gross` desc) as GrossRank, dense_rank() over(order by Profitability desc) as ProfitRank
+from `alien-cedar-469420-n9.hollywood.movies_staging`
+order by GrossRank asc
